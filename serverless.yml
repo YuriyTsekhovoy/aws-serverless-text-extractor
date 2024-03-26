@@ -1,0 +1,90 @@
+service: text-extractor
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.8
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [
+                    'dynamodb:*',
+                    'textract:*',
+                    's3:*'
+          ]
+          Resource: '*'
+        - Effect: Allow
+          Action: [
+                    "dynamodb:GetRecords",
+                    "dynamodb:GetShardIterator",
+                    "dynamodb:DescribeStream",
+                    "dynamodb:ListStreams"
+          ]
+          "Resource":
+            - Fn::GetAtt: [ files, StreamArn ]
+
+  environment:
+    TABLE_NAME: ${self:service}-files
+    BUCKET_NAME: !Ref filesBucket
+
+functions:
+
+  createFile:
+    handler: src.createFile.handler
+    events:
+      - http:
+          path: files
+          method: post
+
+  getFile:
+    handler: src.getFile.handler
+    events:
+      - http:
+          path: files/{file_id}
+          method: get
+
+  processFile:
+    handler: src.processFile.handler
+    events:
+      - s3:
+          bucket: !Ref filesBucket
+          event: s3:ObjectCreated:*
+          existing: true
+
+  makeCallback:
+    handler: src.makeCallback.handler
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt: [files, StreamArn]
+          filterPatterns:
+            - eventName: [MODIFY]
+
+resources:
+  Resources:
+
+    files:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        StreamSpecification:
+          StreamViewType: KEYS_ONLY
+        TableName: ${self:provider.environment.TABLE_NAME}
+        AttributeDefinitions:
+          - AttributeName: file_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: file_id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    filesBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        VersioningConfiguration:
+          Status: Enabled
